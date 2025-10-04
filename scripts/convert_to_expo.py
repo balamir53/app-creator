@@ -9,15 +9,79 @@ import re
 
 def find_missing_imports(file_content):
     """Find all import statements that reference local files"""
-    import_pattern = r"import\s+[^']*from\s+['\"]\.\/([^'\"]+)['\"]"
-    imports = re.findall(import_pattern, file_content)
-    return imports
+    # Pattern for relative imports like ./Component or ../navigation/AppNavigator
+    relative_pattern = r"import\s+[^']*from\s+['\"]\.\.?\/([^'\"]+)['\"]"
+    # Pattern for src/ imports like src/navigation/AppNavigator
+    src_pattern = r"import\s+[^']*from\s+['\"]src\/([^'\"]+)['\"]"
+    
+    relative_imports = re.findall(relative_pattern, file_content)
+    src_imports = re.findall(src_pattern, file_content)
+    
+    return relative_imports + src_imports
 
 def create_missing_component(component_name, components_dir, app_context=""):
     """Create a missing React Native component with context-aware content"""
     
+    # Handle navigation components
+    if "navigation" in component_name.lower() or "navigator" in component_name.lower():
+        component_content = """import React from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
+import { View, Text, StyleSheet } from 'react-native';
+
+// Import your main screen components here
+// import HomeScreen from '../screens/HomeScreen';
+// import CalculatorScreen from '../screens/CalculatorScreen';
+
+const Stack = createStackNavigator();
+
+// Placeholder screen component
+const MainScreen = () => {
+  return (
+    <View style={styles.container}>
+      <Text style={styles.text}>Main Screen</Text>
+      <Text style={styles.subtitle}>Add your app content here</Text>
+    </View>
+  );
+};
+
+const AppNavigator = () => {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator initialRouteName="Main">
+        <Stack.Screen 
+          name="Main" 
+          component={MainScreen}
+          options={{ title: 'Calculator App' }}
+        />
+        {/* Add more screens here */}
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+  },
+  text: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: '#666',
+  },
+});
+
+export default AppNavigator;
+"""
     # Create context-specific components
-    if component_name.lower() == "header":
+    elif component_name.lower() == "header":
         component_content = """import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 
@@ -291,6 +355,7 @@ def fix_missing_imports(src_path):
     print("   🔧 Checking for missing imports...")
     
     missing_components = set()
+    navigation_imports = set()
     
     # Check all JavaScript files for missing imports
     for root, dirs, files in os.walk(src_path):
@@ -304,26 +369,45 @@ def fix_missing_imports(src_path):
                 local_imports = find_missing_imports(content)
                 
                 for import_path in local_imports:
-                    # Check if the file exists
-                    resolved_path = os.path.join(os.path.dirname(file_path), f"{import_path}.js")
-                    if not os.path.exists(resolved_path):
-                        # Extract component name from path
-                        component_name = os.path.basename(import_path)
-                        missing_components.add(component_name)
+                    # Handle different import patterns
+                    if import_path.startswith('navigation/'):
+                        # Navigation import like 'src/navigation/AppNavigator'
+                        nav_dir = os.path.join(src_path, 'navigation')
+                        nav_file = os.path.join(nav_dir, f"{os.path.basename(import_path)}.js")
+                        if not os.path.exists(nav_file):
+                            navigation_imports.add(os.path.basename(import_path))
+                    else:
+                        # Regular component import
+                        resolved_path = os.path.join(os.path.dirname(file_path), f"{import_path}.js")
+                        if not os.path.exists(resolved_path):
+                            # Also check in src directory
+                            src_resolved_path = os.path.join(src_path, f"{import_path}.js")
+                            if not os.path.exists(src_resolved_path):
+                                component_name = os.path.basename(import_path)
+                                missing_components.add(component_name)
     
-    # Create missing components
+    # Create missing navigation components
+    if navigation_imports:
+        navigation_dir = os.path.join(src_path, 'navigation')
+        for nav_component in navigation_imports:
+            create_missing_component(nav_component, navigation_dir, src_path)
+    
+    # Create missing regular components
     if missing_components:
         components_dir = os.path.join(src_path, 'components')
         for component_name in missing_components:
             create_missing_component(component_name, components_dir, src_path)
         
-        # Update import paths in files to point to components directory
-        fix_import_paths(src_path, missing_components)
+        # Update import paths in files
+        fix_import_paths(src_path, missing_components, navigation_imports)
+    elif navigation_imports:
+        # Only navigation imports need fixing
+        fix_import_paths(src_path, set(), navigation_imports)
     else:
         print("   ✅ No missing imports found")
 
-def fix_import_paths(src_path, missing_components):
-    """Update import paths to point to the components directory"""
+def fix_import_paths(src_path, missing_components, navigation_imports=set()):
+    """Update import paths to point to the correct directories"""
     for root, dirs, files in os.walk(src_path):
         for file in files:
             if file.endswith('.js'):
@@ -332,13 +416,26 @@ def fix_import_paths(src_path, missing_components):
                 with open(file_path, 'r') as f:
                     content = f.read()
                 
-                # Fix import paths for missing components
                 updated_content = content
+                
+                # Fix import paths for missing components
                 for component in missing_components:
                     # Replace relative imports with components directory imports
                     old_import = f"from './{component}'"
                     new_import = f"from '../components/{component}'"
                     updated_content = updated_content.replace(old_import, new_import)
+                
+                # Fix navigation imports
+                for nav_component in navigation_imports:
+                    # Replace src/navigation imports
+                    old_src_import = f"from 'src/navigation/{nav_component}'"
+                    new_src_import = f"from './navigation/{nav_component}'"
+                    updated_content = updated_content.replace(old_src_import, new_src_import)
+                    
+                    # Also handle relative navigation imports if any
+                    old_rel_import = f"from '../navigation/{nav_component}'"
+                    new_rel_import = f"from './navigation/{nav_component}'"
+                    updated_content = updated_content.replace(old_rel_import, new_rel_import)
                 
                 # Write back if changed
                 if updated_content != content:
@@ -444,10 +541,33 @@ def convert_to_expo(project_path, app_name):
         with open(original_app_path, 'r') as f:
             app_content = f.read()
         
+        # Check for navigation imports in App.js and fix them before copying
+        app_imports = find_missing_imports(app_content)
+        navigation_files = []
+        
+        for import_path in app_imports:
+            if 'navigation/' in import_path:
+                nav_file = import_path.replace('src/', '')  # Remove src/ prefix
+                navigation_files.append(os.path.basename(nav_file))
+        
+        # Create navigation directory and files if needed
+        if navigation_files:
+            nav_dir = os.path.join(expo_path, 'src', 'navigation')
+            os.makedirs(nav_dir, exist_ok=True)
+            for nav_file in navigation_files:
+                create_missing_component(nav_file, nav_dir, expo_path)
+        
+        # Fix navigation imports in App.js content
+        fixed_app_content = app_content
+        for nav_file in navigation_files:
+            old_import = f"from './src/navigation/{nav_file}'"
+            new_import = f"from './src/navigation/{nav_file}'"
+            fixed_app_content = fixed_app_content.replace(old_import, new_import)
+        
         # Add Expo StatusBar import
         expo_app_content = """import { StatusBar } from 'expo-status-bar';
 import React from 'react';
-""" + app_content.replace("import React from 'react';", "").strip()
+""" + fixed_app_content.replace("import React from 'react';", "").strip()
         
         # Add StatusBar component to the main render
         if "export default" in expo_app_content:
